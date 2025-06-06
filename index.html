@@ -1,0 +1,1851 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCPP EVSE Simulator</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <style>
+    #log { height: 300px; overflow-y: auto; background: #222; color: #eee; font-family: monospace; padding: 10px; font-size: 0.9em; }
+    .msg-out { color: #8ef; }
+    .msg-in { color: #6f6; }
+    .progress { height: 25px; }
+    .charging-status { font-size: 1.2em; }
+    .station-settings { max-height: 400px; overflow-y: auto; }
+    .collapsible-header { cursor: pointer; padding: 0.5rem 0; }
+    .collapsible-content { display: none; }
+    .collapsible-content.show { display: block; }
+    .status-badge {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 5px 10px;
+      border-radius: 15px;
+      font-size: 0.8em;
+    }
+    .graph-container {
+      height: 400px;
+      margin-bottom: 20px;
+    }
+    .card {
+      margin-bottom: 1rem;
+    }
+    .graph-tabs {
+      margin-bottom: 10px;
+    }
+    .graph-tabs .btn {
+      margin-right: 5px;
+    }
+    .gauge-container {
+      height: 40px;
+      margin-bottom: 10px;
+      position: relative;
+    }
+    .gauge-title {
+      text-align: center;
+      font-size: 0.9em;
+      margin-bottom: 5px;
+      color: #666;
+    }
+    .gauge-value {
+      text-align: center;
+      font-size: 1.1em;
+      font-weight: bold;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body class="bg-light">
+<div class="container-fluid py-3">
+  <div class="row">
+    <!-- Left Column: Configuration -->
+    <div class="col-md-5">
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <div class="position-relative">
+            <h2 class="card-title mb-4 text-center">OCPP EVSE Simulator</h2>
+            <span id="connectionStatus" class="status-badge bg-secondary">Disconnected</span>
+          </div>
+          
+          <!-- Connection Settings -->
+          <form id="configForm" class="mb-3">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label for="server" class="form-label">OCPP Server URL:</label>
+                <input type="text" id="server" class="form-control" value="wss://ocpp.server.com" required>
+              </div>
+              <div class="col-md-6">
+                <label for="stationid" class="form-label">Station ID:</label>
+                <input type="text" id="stationid" class="form-control" value="T01" required>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 mt-3" id="connectBtn">Connect</button>
+          </form>
+
+          <!-- Charging Status -->
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title">Charging Status</h5>
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <div class="d-flex align-items-center mb-2">
+                    <span class="me-2">Plug Status:</span>
+                    <span id="plugStatus" class="badge bg-success">Available</span>
+                  </div>
+                  <div class="btn-group w-100">
+                    <button class="btn btn-outline-primary" id="plugInBtn">Plug In</button>
+                    <button class="btn btn-outline-danger" id="plugOutBtn">Plug Out</button>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="d-flex align-items-center mb-2">
+                    <span class="me-2">Connector Status:</span>
+                    <span id="connectorStatus" class="badge bg-secondary">Unavailable</span>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-md-3">
+                  <div class="gauge-title">Power (kW)</div>
+                  <div class="gauge-container">
+                    <canvas id="powerGauge"></canvas>
+                  </div>
+                  <div class="gauge-value" id="powerGaugeValue">0 kW</div>
+                </div>
+                <div class="col-md-3">
+                  <div class="gauge-title">SoC (%)</div>
+                  <div class="gauge-container">
+                    <canvas id="socGauge"></canvas>
+                  </div>
+                  <div class="gauge-value" id="socGaugeValue">0%</div>
+                </div>
+                <div class="col-md-3">
+                  <div class="gauge-title">Voltage (V)</div>
+                  <div class="gauge-container">
+                    <canvas id="voltageGauge"></canvas>
+                  </div>
+                  <div class="gauge-value" id="voltageGaugeValue">0 V</div>
+                </div>
+                <div class="col-md-3">
+                  <div class="gauge-title">Current (A)</div>
+                  <div class="gauge-container">
+                    <canvas id="currentGauge"></canvas>
+                  </div>
+                  <div class="gauge-value" id="currentGaugeValue">0 A</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Control Buttons -->
+          <div class="d-grid gap-2 mb-3">
+            <button class="btn btn-info" id="startBtn" disabled>Start Charging Session</button>
+            <button class="btn btn-warning" id="stopBtn" disabled>Stop Charging Session</button>
+          </div>
+
+          <!-- Station and Vehicle Settings -->
+          <div class="row g-3">
+            <div class="col-12">
+              <div class="card">
+                <div class="card-body">
+                  <div class="collapsible-section">
+                    <div class="collapsible-header d-flex justify-content-between align-items-center" onclick="toggleCollapsible('stationSettings')">
+                      <h5 class="card-title mb-0">Station Settings</h5>
+                      <i class="bi bi-chevron-down"></i>
+                    </div>
+                    <div id="stationSettings" class="collapsible-content">
+                      <!-- Basic Settings -->
+                      <div class="mb-3">
+                        <label for="power" class="form-label">Charging Power (kW):</label>
+                        <input type="number" id="power" class="form-control" value="30" min="1" max="350" step="0.1">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="meterInterval" class="form-label">Meter Value Interval (seconds):</label>
+                        <input type="number" id="meterInterval" class="form-control" value="30" min="1" max="60">
+                      </div>
+
+                      <!-- Electrical Measurements -->
+                      <h6 class="mt-4">Electrical Measurements</h6>
+                      <div class="row g-2">
+                        <div class="col-md-6">
+                          <div class="mb-3">
+                            <label for="voltage" class="form-label">Voltage (V):</label>
+                            <input type="number" id="voltage" class="form-control" value="230" min="200" max="400">
+                          </div>
+                        </div>
+                        <div class="col-md-6">
+                          <div class="mb-3">
+                            <label for="current" class="form-label">Current (A):</label>
+                            <input type="number" id="current" class="form-control" value="32" min="0" max="400">
+                          </div>
+                        </div>
+                        <div class="col-md-6">
+                          <div class="mb-3">
+                            <label for="frequency" class="form-label">Frequency (Hz):</label>
+                            <input type="number" id="frequency" class="form-control" value="50" min="45" max="65">
+                          </div>
+                        </div>
+                        <div class="col-md-6">
+                          <div class="mb-3">
+                            <label for="powerFactor" class="form-label">Power Factor:</label>
+                            <input type="number" id="powerFactor" class="form-control" value="0.95" min="0" max="1" step="0.01">
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="card">
+                <div class="card-body">
+                  <div class="collapsible-section">
+                    <div class="collapsible-header d-flex justify-content-between align-items-center" onclick="toggleCollapsible('vehicleSettings')">
+                      <h5 class="card-title mb-0">Vehicle Settings</h5>
+                      <i class="bi bi-chevron-down"></i>
+                    </div>
+                    <div id="vehicleSettings" class="collapsible-content">
+                      <div class="mb-3">
+                        <label for="vehicle" class="form-label">Select Vehicle:</label>
+                        <select id="vehicle" class="form-select">
+                          <option value="50">Tesla Model 3 (50 kWh)</option>
+                          <option value="75">Tesla Model S (75 kWh)</option>
+                          <option value="100">Tesla Model S (100 kWh)</option>
+                          <option value="82">Nissan Leaf (82 kWh)</option>
+                          <option value="77">VW ID.4 (77 kWh)</option>
+                          <option value="58">Chevrolet Bolt (58 kWh)</option>
+                          <option value="custom">Custom Vehicle</option>
+                        </select>
+                      </div>
+                      <div class="mb-3" id="customVehicleDiv" style="display: none;">
+                        <label for="customVehicle" class="form-label">Custom Battery Capacity (kWh):</label>
+                        <input type="number" id="customVehicle" class="form-control" value="50" min="1" step="0.1">
+                      </div>
+                      <div class="mb-3">
+                        <label for="initialSoc" class="form-label">Initial SoC (%):</label>
+                        <input type="number" id="initialSoc" class="form-control" value="20" min="0" max="100">
+                      </div>
+                      <div class="mb-3">
+                        <label for="idTag" class="form-label">ID Tag:</label>
+                        <input type="text" id="idTag" class="form-control" value="SIMULATED_TAG">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="card">
+                <div class="card-body">
+                  <div class="collapsible-section">
+                    <div class="collapsible-header d-flex justify-content-between align-items-center" onclick="toggleCollapsible('stationConfig')">
+                      <h5 class="card-title mb-0">Station Configuration</h5>
+                      <i class="bi bi-chevron-down"></i>
+                    </div>
+                    <div id="stationConfig" class="collapsible-content">
+                      <div class="mb-3">
+                        <label for="vendor" class="form-label">Vendor:</label>
+                        <input type="text" id="vendor" class="form-control" value="Simulator">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="model" class="form-label">Model:</label>
+                        <input type="text" id="model" class="form-control" value="Virtual Charger">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="serialNumber" class="form-label">Serial Number:</label>
+                        <input type="text" id="serialNumber" class="form-control" value="SIM001">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="firmwareVersion" class="form-label">Firmware Version:</label>
+                        <input type="text" id="firmwareVersion" class="form-control" value="1.0.0">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="iccid" class="form-label">ICCID:</label>
+                        <input type="text" id="iccid" class="form-control" value="SIM-ICCID-001">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="imsi" class="form-label">IMSI:</label>
+                        <input type="text" id="imsi" class="form-control" value="SIM-IMSI-001">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="meterType" class="form-label">Meter Type:</label>
+                        <input type="text" id="meterType" class="form-control" value="Virtual Meter">
+                      </div>
+                      
+                      <div class="mb-3">
+                        <label for="meterSerial" class="form-label">Meter Serial:</label>
+                        <input type="text" id="meterSerial" class="form-control" value="METER-001">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Monitoring -->
+    <div class="col-md-7">
+      <!-- WebSocket Traffic Log -->
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <h5 class="card-title">WebSocket Traffic</h5>
+          <div id="log"></div>
+        </div>
+      </div>
+
+      <!-- Meter Values Graph -->
+      <div class="card shadow mb-3">
+        <div class="card-body">
+          <div class="collapsible-section">
+            <div class="collapsible-header d-flex justify-content-between align-items-center" onclick="toggleCollapsible('meterGraph')">
+              <h5 class="card-title mb-0">Meter Values Graph</h5>
+              <i class="bi bi-chevron-down"></i>
+            </div>
+            <div id="meterGraph" class="collapsible-content">
+              <div class="graph-container">
+                <canvas id="meterGraphCanvas"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration Documentation -->
+      <div class="card shadow">
+        <div class="card-body">
+          <div class="collapsible-section">
+            <div class="collapsible-header d-flex justify-content-between align-items-center" onclick="toggleCollapsible('configDocs')">
+              <h5 class="card-title mb-0">Configuration Documentation</h5>
+              <i class="bi bi-chevron-down"></i>
+            </div>
+            <div id="configDocs" class="collapsible-content">
+              <h6 class="mt-3">URL Query Parameters</h6>
+              <p>You can configure the simulator using URL query parameters. Example:</p>
+              <code>http://localhost:5000/?power=50&voltage=400&current=125&frequency=60</code>
+              
+              <h6 class="mt-4">URL Generator</h6>
+              <div class="card mb-4">
+                <div class="card-body">
+                  <form id="urlGeneratorForm" class="row g-3">
+                    <div class="col-md-6">
+                      <label for="url_power" class="form-label">Charging Power (kW)</label>
+                      <input type="number" class="form-control" id="url_power" min="1" max="350" value="30">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_voltage" class="form-label">Voltage (V)</label>
+                      <input type="number" class="form-control" id="url_voltage" min="200" max="400" value="230">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_current" class="form-label">Current (A)</label>
+                      <input type="number" class="form-control" id="url_current" min="0" max="400" value="32">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_frequency" class="form-label">Frequency (Hz)</label>
+                      <input type="number" class="form-control" id="url_frequency" min="45" max="65" value="50">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_powerFactor" class="form-label">Power Factor</label>
+                      <input type="number" class="form-control" id="url_powerFactor" min="0" max="1" step="0.01" value="0.95">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_meterInterval" class="form-label">Meter Interval (s)</label>
+                      <input type="number" class="form-control" id="url_meterInterval" min="1" max="60" value="30">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_initialSoc" class="form-label">Initial SoC (%)</label>
+                      <input type="number" class="form-control" id="url_initialSoc" min="0" max="100" value="20">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_vehicle" class="form-label">Vehicle Capacity (kWh)</label>
+                      <input type="number" class="form-control" id="url_vehicle" min="1" value="50">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_idTag" class="form-label">ID Tag</label>
+                      <input type="text" class="form-control" id="url_idTag" value="SIMULATED_TAG">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_server" class="form-label">Server URL</label>
+                      <input type="text" class="form-control" id="url_server" value="wss://ocpp.server.com">
+                    </div>
+                    <div class="col-md-6">
+                      <label for="url_stationid" class="form-label">Station ID</label>
+                      <input type="text" class="form-control" id="url_stationid" value="T01">
+                    </div>
+                    <div class="col-12">
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="generatedUrl" readonly>
+                        <button class="btn btn-outline-secondary" type="button" onclick="copyGeneratedUrl()">
+                          <i class="bi bi-clipboard"></i> Copy
+                        </button>
+                        <button class="btn btn-outline-primary" type="button" onclick="applyGeneratedUrl()">
+                          <i class="bi bi-arrow-clockwise"></i> Apply
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </div>
+
+              <h6 class="mt-4">Available Parameters</h6>
+              <div class="table-responsive">
+                <table class="table table-sm">
+                  <thead>
+                    <tr>
+                      <th>Parameter</th>
+                      <th>Description</th>
+                      <th>Default</th>
+                      <th>Range</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><code>power</code></td>
+                      <td>Charging power in kW</td>
+                      <td>30</td>
+                      <td>1-350</td>
+                    </tr>
+                    <tr>
+                      <td><code>voltage</code></td>
+                      <td>Voltage in V</td>
+                      <td>230</td>
+                      <td>200-400</td>
+                    </tr>
+                    <tr>
+                      <td><code>current</code></td>
+                      <td>Current in A</td>
+                      <td>32</td>
+                      <td>0-400</td>
+                    </tr>
+                    <tr>
+                      <td><code>frequency</code></td>
+                      <td>Frequency in Hz</td>
+                      <td>50</td>
+                      <td>45-65</td>
+                    </tr>
+                    <tr>
+                      <td><code>powerFactor</code></td>
+                      <td>Power factor</td>
+                      <td>0.95</td>
+                      <td>0-1</td>
+                    </tr>
+                    <tr>
+                      <td><code>meterInterval</code></td>
+                      <td>Meter value interval in seconds</td>
+                      <td>30</td>
+                      <td>1-60</td>
+                    </tr>
+                    <tr>
+                      <td><code>initialSoc</code></td>
+                      <td>Initial state of charge in %</td>
+                      <td>20</td>
+                      <td>0-100</td>
+                    </tr>
+                    <tr>
+                      <td><code>vehicle</code></td>
+                      <td>Vehicle battery capacity in kWh</td>
+                      <td>50</td>
+                      <td>Any</td>
+                    </tr>
+                    <tr>
+                      <td><code>idTag</code></td>
+                      <td>ID Tag for authorization</td>
+                      <td>SIMULATED_TAG</td>
+                      <td>Any</td>
+                    </tr>
+                    <tr>
+                      <td><code>server</code></td>
+                      <td>OCPP server URL</td>
+                      <td>wss://ocpp.server.co</td>
+                      <td>Any</td>
+                    </tr>
+                    <tr>
+                      <td><code>stationid</code></td>
+                      <td>Station ID</td>
+                      <td>T01</td>
+                      <td>Any</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let ws = null;
+let transactionId = null;
+let meterValue = 0;
+let chargingInterval = null;
+let currentSoc = 20;
+let batteryCapacity = 50; // kWh
+let chargingPower = 30; // kW
+let meterInterval = 30; // seconds
+let isRemoteSession = false;
+let isPluggedIn = false;
+let connectorStatus = "Unavailable";
+let currentPower = 0;
+let targetPower = 0;
+let powerRampRate = chargingPower*0.2; // kW per interval
+let lastMeterUpdate = Date.now();
+let uiUpdateInterval = null;
+let messageIdCounter = 1; // Add message ID counter
+
+// Graph configuration
+let meterGraph = null;
+const maxDataPoints = 60; // Show last 60 points
+const graphData = {
+  power: { labels: [], active: [], reactive: [], apparent: [] },
+  voltage: { labels: [], values: [] },
+  current: { labels: [], values: [] },
+  energy: { labels: [], values: [] },
+  soc: { labels: [], values: [] }
+};
+
+// Add these variables at the top with other global variables
+let powerGauge = null;
+let voltageGauge = null;
+let currentGauge = null;
+let socGauge = null;
+
+function getNextMessageId() {
+  return (messageIdCounter++).toString();
+}
+
+function updateSessionButtons() {
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    // Not connected
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+    startBtn.classList.remove('btn-success');
+    startBtn.classList.add('btn-info');
+    return;
+  }
+  
+  if (chargingInterval) {
+    // Session is active
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    startBtn.classList.remove('btn-success');
+    startBtn.classList.add('btn-info');
+    stopBtn.classList.remove('btn-warning');
+    stopBtn.classList.add('btn-danger');
+  } else {
+    // No active session
+    startBtn.disabled = !isPluggedIn || connectorStatus !== 'Preparing';
+    stopBtn.disabled = true;
+    startBtn.classList.remove('btn-info');
+    startBtn.classList.add('btn-success');
+    stopBtn.classList.remove('btn-danger');
+    stopBtn.classList.add('btn-warning');
+  }
+}
+
+function updatePlugStatus(status) {
+  const statusElement = document.getElementById('plugStatus');
+  statusElement.textContent = status;
+  statusElement.className = 'badge ' + (status === 'Connected' ? 'bg-success' : 'bg-danger');
+  isPluggedIn = status === 'Connected';
+  updateSessionButtons();
+}
+
+function updateConnectorStatus(status) {
+  const statusElement = document.getElementById('connectorStatus');
+  statusElement.textContent = status;
+  let statusClass = 'bg-secondary';
+  switch(status) {
+    case 'Available': statusClass = 'bg-success'; break;
+    case 'Preparing': statusClass = 'bg-warning'; break;
+    case 'Charging': statusClass = 'bg-info'; break;
+    case 'Finishing': statusClass = 'bg-primary'; break;
+  }
+  statusElement.className = 'badge ' + statusClass;
+  connectorStatus = status;
+  
+  // Send status notification for connector 1
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendStatusNotification(1, status);
+  }
+  
+  updateSessionButtons();
+}
+
+function updateConnectionStatus(status, isConnected) {
+  const statusElement = document.getElementById('connectionStatus');
+  statusElement.textContent = status;
+  let statusClass = 'bg-secondary';
+  if (isConnected) {
+    statusClass = 'bg-success';
+  } else if (status === 'Connecting...') {
+    statusClass = 'bg-warning';
+  }
+  statusElement.className = 'status-badge ' + statusClass;
+}
+
+function toggleCollapsible(id) {
+  const content = document.getElementById(id);
+  content.classList.toggle('show');
+  const icon = content.previousElementSibling.querySelector('i');
+  icon.classList.toggle('bi-chevron-down');
+  icon.classList.toggle('bi-chevron-up');
+  
+  // If this is the meter graph, resize it when shown
+  if (id === 'meterGraph' && content.classList.contains('show')) {
+    setTimeout(() => {
+      if (meterGraph) {
+        meterGraph.resize();
+      }
+    }, 100);
+  }
+}
+
+function updatePowerDisplay() {
+  const powerElement = document.getElementById('currentPower');
+  const powerProgress = document.getElementById('powerProgress');
+  const power = chargingInterval ? currentPower : 0;
+  powerElement.textContent = power.toFixed(2);
+  powerProgress.style.width = (power / chargingPower * 100) + '%';
+  powerProgress.textContent = power.toFixed(2) + ' kW';
+}
+
+function logMsg(msg, type) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = type === 'out' ? 'msg-out' : 'msg-in';
+  div.textContent = (type === 'out' ? '→ ' : '← ') + msg;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function sendResponse(messageId, response) {
+  const msg = [3, messageId, response];
+  ws.send(JSON.stringify(msg));
+  logMsg(JSON.stringify(msg), 'out');
+}
+
+function sendBootNotification() {
+  const msg = [2, getNextMessageId(), "BootNotification", {
+    chargePointVendor: document.getElementById('vendor').value,
+    chargePointModel: document.getElementById('model').value,
+    chargePointSerialNumber: document.getElementById('serialNumber').value,
+    firmwareVersion: document.getElementById('firmwareVersion').value,
+    iccid: document.getElementById('iccid').value,
+    imsi: document.getElementById('imsi').value,
+    meterType: document.getElementById('meterType').value,
+    meterSerial: document.getElementById('meterSerial').value
+  }];
+  ws.send(JSON.stringify(msg));
+  logMsg(JSON.stringify(msg), 'out');
+}
+
+function sendStatusNotification(connectorId, status) {
+  const statusMsg = [2, getNextMessageId(), "StatusNotification", {
+    connectorId: connectorId,
+    errorCode: "NoError",
+    status: status,
+    timestamp: new Date().toISOString()
+  }];
+  ws.send(JSON.stringify(statusMsg));
+  logMsg(JSON.stringify(statusMsg), 'out');
+}
+
+function handleBootNotificationResponse(messageId, payload) {
+  // Send status notification for each connector
+  const numberOfConnectors = parseInt(localStorage.getItem('ocpp_config_NumberOfConnectors')) || 1;
+  
+  for (let i = 0; i <= numberOfConnectors; i++) {
+    // For connector 0 (main connector) and connector 1, set as Available
+    // For other connectors, set as Unavailable
+    const status = (i === 0 || i === 1) ? "Available" : "Unavailable";
+    sendStatusNotification(i, status);
+  }
+  
+  // Update the UI to reflect connector 1's status
+  updateConnectorStatus("Available");
+}
+
+function handleRemoteStartTransaction(messageId, payload) {
+  if (chargingInterval) {
+    sendResponse(messageId, { status: "Rejected" });
+    return;
+  }
+  
+  if (!isPluggedIn) {
+    sendResponse(messageId, { status: "Rejected" });
+    return;
+  }
+  
+  if (connectorStatus !== 'Preparing') {
+    sendResponse(messageId, { status: "Rejected" });
+    return;
+  }
+  
+  isRemoteSession = true;
+  transactionId = Date.now();
+  meterValue = 0;
+  currentSoc = parseFloat(document.getElementById('initialSoc').value);
+  
+  const startMsg = [2, getNextMessageId(), "StartTransaction", {
+    connectorId: payload.connectorId || 1,
+    idTag: payload.idTag,
+    meterStart: 0,
+    timestamp: new Date().toISOString()
+  }];
+  ws.send(JSON.stringify(startMsg));
+  logMsg(JSON.stringify(startMsg), 'out');
+  
+  updateConnectorStatus('Charging');
+  startMeterValues();
+  updateSessionButtons();
+  
+  sendResponse(messageId, { status: "Accepted" });
+}
+
+function handleRemoteStopTransaction(messageId, payload) {
+  if (!chargingInterval) {
+    sendResponse(messageId, { status: "Rejected" });
+    return;
+  }
+  
+  clearInterval(chargingInterval);
+  clearInterval(uiUpdateInterval);
+  const stopMsg = [2, getNextMessageId(), "StopTransaction", {
+    transactionId: transactionId,
+    meterStop: meterValue,
+    timestamp: new Date().toISOString(),
+    reason: "Remote"
+  }];
+  ws.send(JSON.stringify(stopMsg));
+  logMsg(JSON.stringify(stopMsg), 'out');
+  
+  updateConnectorStatus('Finishing');
+  if (isPluggedIn) {
+    updateConnectorStatus('Preparing');
+  } else {
+    updateConnectorStatus('Available');
+  }
+  updateSessionButtons();
+  
+  sendResponse(messageId, { status: "Accepted" });
+}
+
+function handleSetConfiguration(messageId, payload) {
+  const response = { configurationKey: [] };
+  let success = true;
+
+  // Standard OCPP 1.6 configuration keys
+  const standardKeys = {
+    'AllowOfflineTxForUnknownId': { type: 'boolean' },
+    'AuthorizationCacheEnabled': { type: 'boolean' },
+    'AuthorizationCacheLifetime': { type: 'integer' },
+    'AuthorizeRemoteTxRequests': { type: 'boolean' },
+    'ClockAlignedDataInterval': { type: 'integer' },
+    'ConnectionTimeOut': { type: 'integer' },
+    'ConnectorPhaseRotation': { type: 'string' },
+    'ConnectorPhaseRotationMaxLength': { type: 'integer' },
+    'GetConfigurationMaxKeys': { type: 'integer' },
+    'HeartbeatInterval': { type: 'integer' },
+    'LocalAuthorizeOffline': { type: 'boolean' },
+    'LocalPreAuthorize': { type: 'boolean' },
+    'MeterValueAlignedData': { type: 'string' },
+    'MeterValueAlignedDataMaxLength': { type: 'integer' },
+    'MeterValueSampledData': { type: 'string' },
+    'MeterValueSampledDataMaxLength': { type: 'integer' },
+    'MinimumStatusDuration': { type: 'integer' },
+    'NumberOfConnectors': { type: 'integer' },
+    'ResetRetries': { type: 'integer' },
+    'StopTransactionMaxMeterValues': { type: 'integer' },
+    'StopTransactionOnEVSideDisconnect': { type: 'boolean' },
+    'StopTransactionOnInvalidId': { type: 'boolean' },
+    'StopTxnAlignedData': { type: 'string' },
+    'StopTxnAlignedDataMaxLength': { type: 'integer' },
+    'StopTxnSampledData': { type: 'string' },
+    'StopTxnSampledDataMaxLength': { type: 'integer' },
+    'TransactionMessageAttempts': { type: 'integer' },
+    'TransactionMessageRetryInterval': { type: 'integer' },
+    'UnlockConnectorOnEVSideDisconnect': { type: 'boolean' },
+    'WebSocketPingInterval': { type: 'integer' },
+    'LocalAuthListEnabled': { type: 'boolean' },
+    'LocalAuthListMaxLength': { type: 'integer' },
+    'SendLocalListMaxLength': { type: 'integer' },
+    'ReserveConnectorZeroSupported': { type: 'boolean' },
+    'ChargeProfileMaxStackLevel': { type: 'integer' },
+    'ChargingScheduleAllowedChargingRateUnit': { type: 'string' },
+    'ChargingScheduleMaxPeriods': { type: 'integer' },
+    'ConnectorSwitch3to1PhaseSupported': { type: 'boolean' },
+    'MaxChargingProfilesInstalled': { type: 'integer' }
+  };
+
+  for (const [key, value] of Object.entries(payload)) {
+    try {
+      if (!standardKeys[key]) {
+        response.configurationKey.push({ key, status: "NotSupported" });
+        success = false;
+        continue;
+      }
+
+      const config = standardKeys[key];
+      let parsedValue;
+      let isValid = true;
+
+      switch (config.type) {
+        case 'boolean':
+          parsedValue = value.toLowerCase() === 'true';
+          break;
+        case 'integer':
+          parsedValue = parseInt(value);
+          isValid = !isNaN(parsedValue);
+          break;
+        case 'string':
+          parsedValue = value;
+          break;
+      }
+
+      if (!isValid) {
+        response.configurationKey.push({ key, status: "Rejected" });
+        success = false;
+        continue;
+      }
+
+      // Store the configuration value
+      localStorage.setItem(`ocpp_config_${key}`, value);
+      response.configurationKey.push({ key, status: "Accepted" });
+
+      // If NumberOfConnectors is updated, send status notifications for all connectors
+      if (key === 'NumberOfConnectors') {
+        const numberOfConnectors = parseInt(value);
+        for (let i = 0; i <= numberOfConnectors; i++) {
+          const status = i === 0 ? "Available" : "Unavailable";
+          sendStatusNotification(i, status);
+        }
+      }
+
+    } catch (e) {
+      response.configurationKey.push({ key, status: "Rejected" });
+      success = false;
+    }
+  }
+
+  sendResponse(messageId, response);
+  return success;
+}
+
+document.getElementById('configForm').onsubmit = function(e) {
+  e.preventDefault();
+  const server = document.getElementById('server').value;
+  const stationid = document.getElementById('stationid').value;
+  const connectBtn = document.getElementById('connectBtn');
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    // If connected, disconnect
+    ws.close();
+    return;
+  }
+  
+  // Update status to connecting
+  updateConnectionStatus('Connecting...', false);
+  connectBtn.disabled = true;
+  
+  // Connect to WebSocket
+  ws = new WebSocket(server + '/' + stationid, 'ocpp1.6');
+  ws.onopen = () => {
+    logMsg('Connected to ' + ws.url, 'in');
+    updateConnectionStatus('Connected', true);
+    connectBtn.textContent = 'Disconnect';
+    connectBtn.classList.remove('btn-primary');
+    connectBtn.classList.add('btn-danger');
+    connectBtn.disabled = false;
+    updateSessionButtons();
+    sendBootNotification();
+  };
+  ws.onmessage = (event) => {
+    logMsg(event.data, 'in');
+    try {
+      const message = JSON.parse(event.data);
+      if (message[0] === 2) { // Request
+        const [_, messageId, action, payload] = message;
+        switch (action) {
+          case "RemoteStartTransaction":
+            handleRemoteStartTransaction(messageId, payload);
+            break;
+          case "RemoteStopTransaction":
+            handleRemoteStopTransaction(messageId, payload);
+            break;
+          case "SetConfiguration":
+            handleSetConfiguration(messageId, payload);
+            break;
+        }
+      } else if (message[0] === 3) { // Response
+        const [_, messageId, payload] = message;
+        // Check if this is a response to our boot notification
+        if (messageId === "1") {
+          handleBootNotificationResponse(messageId, payload);
+        }
+      }
+    } catch (e) {
+      console.error('Error parsing message:', e);
+    }
+  };
+  ws.onclose = () => {
+    logMsg('WebSocket closed', 'in');
+    clearInterval(chargingInterval);
+    clearInterval(uiUpdateInterval);
+    if (meterGraph) {
+      meterGraph.destroy();
+      meterGraph = null;
+    }
+    if (powerGauge) {
+      powerGauge.destroy();
+      powerGauge = null;
+    }
+    if (voltageGauge) {
+      voltageGauge.destroy();
+      voltageGauge = null;
+    }
+    if (currentGauge) {
+      currentGauge.destroy();
+      currentGauge = null;
+    }
+    if (socGauge) {
+      socGauge.destroy();
+      socGauge = null;
+    }
+    updatePowerDisplay();
+    updateConnectionStatus('Disconnected', false);
+    connectBtn.textContent = 'Connect';
+    connectBtn.classList.remove('btn-danger');
+    connectBtn.classList.add('btn-primary');
+    connectBtn.disabled = false;
+    updateSessionButtons();
+  };
+  ws.onerror = (err) => {
+    logMsg('WebSocket error', 'in');
+    updateConnectionStatus('Error', false);
+    connectBtn.disabled = false;
+  };
+};
+
+document.getElementById('vehicle').onchange = function() {
+  const customVehicleDiv = document.getElementById('customVehicleDiv');
+  if (this.value === 'custom') {
+    customVehicleDiv.style.display = 'block';
+    batteryCapacity = parseFloat(document.getElementById('customVehicle').value);
+  } else {
+    customVehicleDiv.style.display = 'none';
+    batteryCapacity = parseFloat(this.value);
+  }
+  currentSoc = parseFloat(document.getElementById('initialSoc').value);
+};
+
+document.getElementById('customVehicle').onchange = function() {
+  if (document.getElementById('vehicle').value === 'custom') {
+    batteryCapacity = parseFloat(this.value);
+    currentSoc = parseFloat(document.getElementById('initialSoc').value);
+  }
+};
+
+document.getElementById('initialSoc').onchange = function() {
+  currentSoc = parseFloat(this.value);
+};
+
+document.getElementById('power').onchange = function() {
+  const newPower = parseFloat(this.value);
+  if (newPower >= 1 && newPower <= 350) {
+    chargingPower = newPower;
+    targetPower = newPower;
+    updatePowerDisplay();
+  }
+};
+
+document.getElementById('meterInterval').onchange = function() {
+  meterInterval = parseInt(this.value);
+  if (chargingInterval) {
+    clearInterval(chargingInterval);
+    startMeterValues();
+  }
+};
+
+function getRandomVariation(baseValue, percentage) {
+  const variation = baseValue * (percentage / 100);
+  return baseValue + (Math.random() * variation * 2 - variation);
+}
+
+// OCPP 1.6 compliant measurement types and units
+const OCPP_MEASUREMENTS = {
+  Energy: {
+    Active: {
+      Import: {
+        Register: { unit: "Wh", multiplier: 1 },
+        Interval: { unit: "Wh", multiplier: 1 }
+      },
+      Export: {
+        Register: { unit: "Wh", multiplier: 1 },
+        Interval: { unit: "Wh", multiplier: 1 }
+      }
+    },
+    Reactive: {
+      Import: {
+        Register: { unit: "varh", multiplier: 1 },
+        Interval: { unit: "varh", multiplier: 1 }
+      },
+      Export: {
+        Register: { unit: "varh", multiplier: 1 },
+        Interval: { unit: "varh", multiplier: 1 }
+      }
+    }
+  },
+  Power: {
+    Active: {
+      Import: { unit: "W", multiplier: 1 },
+      Export: { unit: "W", multiplier: 1 }
+    },
+    Reactive: {
+      Import: { unit: "var", multiplier: 1 },
+      Export: { unit: "var", multiplier: 1 }
+    },
+    Apparent: {
+      Import: { unit: "VA", multiplier: 1 },
+      Export: { unit: "VA", multiplier: 1 }
+    }
+  },
+  Current: {
+    Import: { unit: "A", multiplier: 0.1 },
+    Export: { unit: "A", multiplier: 0.1 },
+    Offered: { unit: "A", multiplier: 0.1 }
+  },
+  Voltage: { unit: "V", multiplier: 0.1 },
+  Frequency: { unit: "Hz", multiplier: 0.01 },
+  Temperature: { unit: "Celsius", multiplier: 0.1 },
+  SoC: { unit: "Percent", multiplier: 0.1 }
+};
+
+function getVoltageVariation(baseVoltage) {
+  // Voltage typically varies by ±2%
+  return getRandomVariation(baseVoltage, 2);
+}
+
+function getCurrentVariation(baseCurrent) {
+  // Current typically varies by ±1%
+  return getRandomVariation(baseCurrent, 1);
+}
+
+function getFrequencyVariation(baseFrequency) {
+  // Frequency typically varies by ±0.1%
+  return getRandomVariation(baseFrequency, 0.1);
+}
+
+function getPowerFactorVariation(basePowerFactor) {
+  // Power factor typically varies by ±0.02
+  return Math.max(0.8, Math.min(1.0, basePowerFactor + (Math.random() * 0.04 - 0.02)));
+}
+
+function calculatePowerRamp() {
+  const now = Date.now();
+  const timeDiff = (now - lastMeterUpdate) / 1000; // Convert to seconds
+  
+  if (currentPower < targetPower) {
+    currentPower = Math.min(targetPower, currentPower + (powerRampRate * timeDiff));
+  } else if (currentPower > targetPower) {
+    currentPower = Math.max(targetPower, currentPower - (powerRampRate * timeDiff));
+  }
+  
+  lastMeterUpdate = now;
+  return currentPower;
+}
+
+// Initialize graph when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  initGraph();
+  initGauges();
+  
+  // Initialize all collapsible sections as collapsed
+  const collapsibleContents = document.querySelectorAll('.collapsible-content');
+  collapsibleContents.forEach(content => {
+    content.classList.remove('show');
+    const icon = content.previousElementSibling.querySelector('i');
+    icon.classList.remove('bi-chevron-up');
+    icon.classList.add('bi-chevron-down');
+  });
+  updateSessionButtons();
+});
+
+function initGraph() {
+  const ctx = document.getElementById('meterGraphCanvas').getContext('2d');
+  
+  // Destroy existing chart if it exists
+  if (meterGraph) {
+    meterGraph.destroy();
+  }
+  
+  meterGraph = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Active Power (W)',
+          data: [],
+          borderColor: '#4CAF50', // Green
+          backgroundColor: 'rgba(76, 175, 80, 0.1)',
+          tension: 0.1,
+          yAxisID: 'power',
+          borderWidth: 2
+        },
+        {
+          label: 'Reactive Power (var)',
+          data: [],
+          borderColor: '#FF5722', // Deep Orange
+          backgroundColor: 'rgba(255, 87, 34, 0.1)',
+          tension: 0.1,
+          yAxisID: 'power',
+          borderWidth: 2
+        },
+        {
+          label: 'Apparent Power (VA)',
+          data: [],
+          borderColor: '#2196F3', // Blue
+          backgroundColor: 'rgba(33, 150, 243, 0.1)',
+          tension: 0.1,
+          yAxisID: 'power',
+          borderWidth: 2
+        },
+        {
+          label: 'Voltage (V)',
+          data: [],
+          borderColor: '#9C27B0', // Purple
+          backgroundColor: 'rgba(156, 39, 176, 0.1)',
+          tension: 0.1,
+          yAxisID: 'voltage',
+          borderWidth: 2
+        },
+        {
+          label: 'Current (A)',
+          data: [],
+          borderColor: '#FF9800', // Orange
+          backgroundColor: 'rgba(255, 152, 0, 0.1)',
+          tension: 0.1,
+          yAxisID: 'current',
+          borderWidth: 2
+        },
+        {
+          label: 'Energy (Wh)',
+          data: [],
+          borderColor: '#00BCD4', // Cyan
+          backgroundColor: 'rgba(0, 188, 212, 0.1)',
+          tension: 0.1,
+          yAxisID: 'energy',
+          borderWidth: 2
+        },
+        {
+          label: 'SoC (%)',
+          data: [],
+          borderColor: '#E91E63', // Pink
+          backgroundColor: 'rgba(233, 30, 99, 0.1)',
+          tension: 0.1,
+          yAxisID: 'soc',
+          borderWidth: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            unit: 'second',
+            displayFormats: {
+              second: 'HH:mm:ss'
+            },
+            tooltipFormat: 'HH:mm:ss'
+          },
+          title: {
+            display: true,
+            text: 'Time'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        power: {
+          type: 'linear',
+          display: true,
+          position: 'left',
+          title: {
+            display: true,
+            text: 'Power (W/var/VA)'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        voltage: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          title: {
+            display: true,
+            text: 'Voltage (V)'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        current: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          title: {
+            display: true,
+            text: 'Current (A)'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        energy: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          title: {
+            display: true,
+            text: 'Energy (Wh)'
+          },
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        },
+        soc: {
+          type: 'linear',
+          display: true,
+          position: 'right',
+          title: {
+            display: true,
+            text: 'SoC (%)'
+          },
+          min: 0,
+          max: 100,
+          grid: {
+            color: 'rgba(0, 0, 0, 0.1)'
+          }
+        }
+      },
+      plugins: {
+        legend: {
+          position: 'top',
+          align: 'start',
+          labels: {
+            usePointStyle: true,
+            padding: 20
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              let label = context.dataset.label || '';
+              if (label) {
+                label += ': ';
+              }
+              if (context.parsed.y !== null) {
+                label += context.parsed.y.toFixed(2);
+              }
+              return label;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function initGauges() {
+  // Clean up existing gauges
+  if (powerGauge) {
+    powerGauge.destroy();
+    powerGauge = null;
+  }
+  if (voltageGauge) {
+    voltageGauge.destroy();
+    voltageGauge = null;
+  }
+  if (currentGauge) {
+    currentGauge.destroy();
+    currentGauge = null;
+  }
+  if (socGauge) {
+    socGauge.destroy();
+    socGauge = null;
+  }
+
+  // Power Gauge
+  const powerCtx = document.getElementById('powerGauge').getContext('2d');
+  powerGauge = new Chart(powerCtx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [0, chargingPower],
+        backgroundColor: ['#FF5722', '#E0E0E0'],
+        borderWidth: 0,
+        circumference: 180,
+        rotation: 270
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          enabled: false
+        }
+      }
+    }
+  });
+
+  // SoC Gauge
+  const socCtx = document.getElementById('socGauge').getContext('2d');
+  socGauge = new Chart(socCtx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [0, 100],
+        backgroundColor: ['#FF5722', '#E0E0E0'],
+        borderWidth: 0,
+        circumference: 180,
+        rotation: 270
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          enabled: false
+        }
+      }
+    }
+  });
+
+  // Voltage Gauge
+  const voltageCtx = document.getElementById('voltageGauge').getContext('2d');
+  voltageGauge = new Chart(voltageCtx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [0, 400],
+        backgroundColor: ['#FF5722', '#E0E0E0'],
+        borderWidth: 0,
+        circumference: 180,
+        rotation: 270
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          enabled: false
+        }
+      }
+    }
+  });
+
+  // Current Gauge
+  const currentCtx = document.getElementById('currentGauge').getContext('2d');
+  currentGauge = new Chart(currentCtx, {
+    type: 'doughnut',
+    data: {
+      datasets: [{
+        data: [0, 400],
+        backgroundColor: ['#FF5722', '#E0E0E0'],
+        borderWidth: 0,
+        circumference: 180,
+        rotation: 270
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '70%',
+      plugins: {
+        legend: {
+          display: false
+        },
+        tooltip: {
+          enabled: false
+        }
+      }
+    }
+  });
+}
+
+function updateGauge(gauge, value, maxValue) {
+  if (!gauge) return;
+  
+  // Update the gauge data
+  gauge.data.datasets[0].data = [value, maxValue - value];
+  
+  // Update the gauge color based on the value
+  const percentage = value / maxValue;
+  let color;
+  if (percentage < 0.5) {
+    color = '#FF5722'; // Red for low values
+  } else if (percentage < 0.8) {
+    color = '#FFC107'; // Yellow for medium values
+  } else {
+    color = '#4CAF50'; // Green for high values
+  }
+  gauge.data.datasets[0].backgroundColor = [color, '#E0E0E0'];
+  
+  gauge.update();
+}
+
+function updateUIValues() {
+  // Calculate actual power with ramping
+  const actualPower = calculatePowerRamp();
+  
+  // Calculate energy added in this interval (Wh)
+  const energyAdded = (actualPower * 1000) * (0.1 / 3600); // Update every 100ms
+  meterValue += energyAdded;
+  
+  // Update SoC
+  currentSoc += (energyAdded / (batteryCapacity * 1000)) * 100;
+  if (currentSoc > 100) currentSoc = 100;
+  
+  // Get base values
+  const baseVoltage = parseInt(document.getElementById('voltage').value);
+  const baseCurrent = parseInt(document.getElementById('current').value);
+  const baseFrequency = parseInt(document.getElementById('frequency').value);
+  const basePowerFactor = parseFloat(document.getElementById('powerFactor').value);
+  
+  // Calculate actual values with variations
+  const actualVoltage = getVoltageVariation(baseVoltage);
+  const actualCurrent = getCurrentVariation(baseCurrent);
+  const actualFrequency = getFrequencyVariation(baseFrequency);
+  const actualPowerFactor = getPowerFactorVariation(basePowerFactor);
+  
+  // Calculate reactive and apparent power
+  const activePower = actualPower * 1000; // Convert to W
+  const reactivePower = activePower * Math.sqrt(1 - Math.pow(actualPowerFactor, 2));
+  const apparentPower = activePower / actualPowerFactor;
+  
+  // Update gauges
+  if (powerGauge) {
+    updateGauge(powerGauge, actualPower, chargingPower);
+    document.getElementById('powerGaugeValue').textContent = actualPower.toFixed(2) + ' kW';
+  }
+  
+  if (socGauge) {
+    updateGauge(socGauge, currentSoc, 100);
+    document.getElementById('socGaugeValue').textContent = currentSoc.toFixed(1) + '%';
+  }
+  
+  if (voltageGauge) {
+    updateGauge(voltageGauge, actualVoltage, 400);
+    document.getElementById('voltageGaugeValue').textContent = actualVoltage.toFixed(1) + ' V';
+  }
+  
+  if (currentGauge) {
+    updateGauge(currentGauge, actualCurrent, 400);
+    document.getElementById('currentGaugeValue').textContent = actualCurrent.toFixed(1) + ' A';
+  }
+}
+
+function startMeterValues() {
+  if (connectorStatus !== 'Charging') {
+    alert('Connector must be in Charging status to start meter values');
+    return;
+  }
+  
+  targetPower = chargingPower;
+  currentPower = 0;
+  lastMeterUpdate = Date.now();
+  
+  // Start UI updates at 100ms intervals
+  uiUpdateInterval = setInterval(updateUIValues, 100);
+  
+  // Start meter value updates at configured interval
+  chargingInterval = setInterval(() => {
+    // Get base values
+    const baseVoltage = parseInt(document.getElementById('voltage').value);
+    const baseCurrent = parseInt(document.getElementById('current').value);
+    const baseFrequency = parseInt(document.getElementById('frequency').value);
+    const basePowerFactor = parseFloat(document.getElementById('powerFactor').value);
+    
+    // Calculate actual values with variations
+    const actualVoltage = getVoltageVariation(baseVoltage);
+    const actualCurrent = getCurrentVariation(baseCurrent);
+    const actualFrequency = getFrequencyVariation(baseFrequency);
+    const actualPowerFactor = getPowerFactorVariation(basePowerFactor);
+    
+    // Calculate reactive and apparent power
+    const activePower = currentPower * 1000; // Convert to W
+    const reactivePower = activePower * Math.sqrt(1 - Math.pow(actualPowerFactor, 2));
+    const apparentPower = activePower / actualPowerFactor;
+    
+    // Update graph with all values
+    updateGraph(new Date().toISOString(), {
+      active: activePower,
+      reactive: reactivePower,
+      apparent: apparentPower,
+      voltage: actualVoltage,
+      current: actualCurrent,
+      energy: meterValue,
+      soc: currentSoc
+    });
+    
+    const meterMsg = [2, getNextMessageId(), "MeterValues", {
+      connectorId: 1,
+      transactionId: transactionId,
+      meterValue: [{
+        timestamp: new Date().toISOString(),
+        sampledValue: [
+          { 
+            value: meterValue.toFixed(0),
+            measurand: "Energy.Active.Import.Register",
+            unit: "Wh"
+          },
+          {
+            value: activePower.toFixed(0),
+            measurand: "Power.Active.Import",
+            unit: "W"
+          },
+          {
+            value: reactivePower.toFixed(0),
+            measurand: "Power.Reactive.Import",
+            unit: "var"
+          },
+          {
+            value: apparentPower.toFixed(0),
+            measurand: "Power.Apparent.Import",
+            unit: "VA"
+          },
+          {
+            value: actualCurrent.toFixed(1),
+            measurand: "Current.Import",
+            unit: "A"
+          },
+          {
+            value: actualVoltage.toFixed(1),
+            measurand: "Voltage",
+            unit: "V"
+          },
+          {
+            value: actualFrequency.toFixed(2),
+            measurand: "Frequency",
+            unit: "Hz"
+          },
+          {
+            value: actualPowerFactor.toFixed(2),
+            measurand: "Power.Factor",
+            unit: "Percent"
+          },
+          {
+            value: currentSoc.toFixed(1),
+            measurand: "SoC",
+            unit: "Percent"
+          }
+        ]
+      }]
+    }];
+    ws.send(JSON.stringify(meterMsg));
+    logMsg(JSON.stringify(meterMsg), 'out');
+  }, meterInterval * 1000);
+}
+
+document.getElementById('startBtn').onclick = function() {
+  if (isRemoteSession) {
+    alert('Cannot start local session while remote session is active');
+    return;
+  }
+  
+  if (!isPluggedIn) {
+    alert('Please plug in first');
+    return;
+  }
+  
+  if (connectorStatus !== 'Preparing') {
+    alert('Connector must be in Preparing status to start charging');
+    return;
+  }
+  
+  transactionId = Date.now();
+  meterValue = 0;
+  currentSoc = parseFloat(document.getElementById('initialSoc').value);
+  
+  const startMsg = [2, getNextMessageId(), "StartTransaction", {
+    connectorId: 1,
+    idTag: document.getElementById('idTag').value,
+    meterStart: 0,
+    timestamp: new Date().toISOString()
+  }];
+  ws.send(JSON.stringify(startMsg));
+  logMsg(JSON.stringify(startMsg), 'out');
+  
+  updateConnectorStatus('Charging');
+  startMeterValues();
+  updateSessionButtons();
+};
+
+document.getElementById('stopBtn').onclick = function() {
+  if (isRemoteSession) {
+    alert('Cannot stop remote session from local controls');
+    return;
+  }
+  
+  clearInterval(chargingInterval);
+  clearInterval(uiUpdateInterval);
+  const stopMsg = [2, getNextMessageId(), "StopTransaction", {
+    transactionId: transactionId,
+    meterStop: meterValue,
+    timestamp: new Date().toISOString(),
+    reason: "Local"
+  }];
+  ws.send(JSON.stringify(stopMsg));
+  logMsg(JSON.stringify(stopMsg), 'out');
+  
+  updateConnectorStatus('Finishing');
+  if (isPluggedIn) {
+    updateConnectorStatus('Preparing');
+  } else {
+    updateConnectorStatus('Available');
+  }
+  updateSessionButtons();
+};
+
+// Add event listeners for plug controls
+document.getElementById('plugInBtn').onclick = function() {
+  updatePlugStatus('Connected');
+  updateConnectorStatus('Preparing');
+};
+
+document.getElementById('plugOutBtn').onclick = function() {
+  if (chargingInterval) {
+    alert('Cannot unplug while charging is in progress');
+    return;
+  }
+  updatePlugStatus('Disconnected');
+  updateConnectorStatus('Available');
+};
+
+// Initialize displays
+updateConnectionStatus('Disconnected', false);
+updatePlugStatus('Disconnected');
+updateConnectorStatus('Available');
+
+// Add URL parameter handling at the start of the script
+function getUrlParameter(name) {
+  const urlParams = new URLSearchParams(window.location.search);
+  return urlParams.get(name);
+}
+
+function setInputValue(id, defaultValue, min, max) {
+  const element = document.getElementById(id);
+  const value = getUrlParameter(id);
+  if (value !== null) {
+    const numValue = parseFloat(value);
+    if (!isNaN(numValue)) {
+      if (min !== undefined && max !== undefined) {
+        element.value = Math.min(Math.max(numValue, min), max);
+      } else {
+        element.value = numValue;
+      }
+    }
+  } else {
+    element.value = defaultValue;
+  }
+}
+
+// Initialize values from URL parameters
+document.addEventListener('DOMContentLoaded', function() {
+  // Set values from URL parameters
+  setInputValue('power', 30, 1, 350);
+  setInputValue('voltage', 230, 200, 400);
+  setInputValue('current', 32, 0, 400);
+  setInputValue('frequency', 50, 45, 65);
+  setInputValue('powerFactor', 0.95, 0, 1);
+  setInputValue('meterInterval', 30, 1, 60);
+  setInputValue('initialSoc', 20, 0, 100);
+  
+  // Set text values
+  const idTag = getUrlParameter('idTag');
+  if (idTag) document.getElementById('idTag').value = idTag;
+  
+  const server = getUrlParameter('server');
+  if (server) document.getElementById('server').value = server;
+  
+  const stationid = getUrlParameter('stationid');
+  if (stationid) document.getElementById('stationid').value = stationid;
+  
+  // Set vehicle capacity
+  const vehicle = getUrlParameter('vehicle');
+  if (vehicle) {
+    const vehicleSelect = document.getElementById('vehicle');
+    const vehicleValue = parseFloat(vehicle);
+    if (!isNaN(vehicleValue)) {
+      // Check if it matches any predefined value
+      let found = false;
+      for (let option of vehicleSelect.options) {
+        if (option.value !== 'custom' && Math.abs(parseFloat(option.value) - vehicleValue) < 0.1) {
+          vehicleSelect.value = option.value;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // Set to custom and update custom value
+        vehicleSelect.value = 'custom';
+        document.getElementById('customVehicle').value = vehicleValue;
+        document.getElementById('customVehicleDiv').style.display = 'block';
+      }
+    }
+  }
+  
+  // Initialize graph and gauges
+  initGraph();
+  initGauges();
+  
+  // Initialize all collapsible sections as collapsed
+  const collapsibleContents = document.querySelectorAll('.collapsible-content');
+  collapsibleContents.forEach(content => {
+    content.classList.remove('show');
+    const icon = content.previousElementSibling.querySelector('i');
+    icon.classList.remove('bi-chevron-up');
+    icon.classList.add('bi-chevron-down');
+  });
+  updateSessionButtons();
+});
+
+function updateGeneratedUrl() {
+  const form = document.getElementById('urlGeneratorForm');
+  const params = new URLSearchParams();
+  
+  // Add all form values to params
+  for (const element of form.elements) {
+    if (element.id && element.id.startsWith('url_')) {
+      const paramName = element.id.replace('url_', '');
+      if (element.value) {
+        params.set(paramName, element.value);
+      }
+    }
+  }
+  
+  // Update the generated URL
+  const baseUrl = window.location.href.split('?')[0];
+  document.getElementById('generatedUrl').value = `${baseUrl}?${params.toString()}`;
+}
+
+function copyGeneratedUrl() {
+  const urlInput = document.getElementById('generatedUrl');
+  urlInput.select();
+  document.execCommand('copy');
+  
+  // Show feedback
+  const copyBtn = urlInput.nextElementSibling;
+  const originalText = copyBtn.innerHTML;
+  copyBtn.innerHTML = '<i class="bi bi-check"></i> Copied!';
+  setTimeout(() => {
+    copyBtn.innerHTML = originalText;
+  }, 2000);
+}
+
+function applyGeneratedUrl() {
+  const url = document.getElementById('generatedUrl').value;
+  window.location.href = url;
+}
+
+// Add input event listeners to URL generator form
+document.addEventListener('DOMContentLoaded', function() {
+  // ... existing initialization code ...
+  
+  // Add input event listeners to URL generator form
+  const urlGeneratorForm = document.getElementById('urlGeneratorForm');
+  for (const element of urlGeneratorForm.elements) {
+    if (element.id && element.id.startsWith('url_')) {
+      element.addEventListener('input', updateGeneratedUrl);
+    }
+  }
+  
+  // Initialize URL generator with current values
+  const urlParams = new URLSearchParams(window.location.search);
+  for (const [key, value] of urlParams.entries()) {
+    const input = document.getElementById(`url_${key}`);
+    if (input) {
+      input.value = value;
+    }
+  }
+  updateGeneratedUrl();
+});
+
+function updateGraph(timestamp, values) {
+  if (!meterGraph) return;
+
+  // Add new data point
+  const time = new Date(timestamp);
+  
+  // Update power data
+  meterGraph.data.datasets[0].data.push({ x: time, y: values.active });
+  meterGraph.data.datasets[1].data.push({ x: time, y: values.reactive });
+  meterGraph.data.datasets[2].data.push({ x: time, y: values.apparent });
+  
+  // Update voltage data
+  meterGraph.data.datasets[3].data.push({ x: time, y: values.voltage });
+  
+  // Update current data
+  meterGraph.data.datasets[4].data.push({ x: time, y: values.current });
+  
+  // Update energy data
+  meterGraph.data.datasets[5].data.push({ x: time, y: values.energy });
+  
+  // Update SoC data
+  meterGraph.data.datasets[6].data.push({ x: time, y: values.soc });
+  
+  // Remove old data points if we exceed maxDataPoints
+  if (meterGraph.data.datasets[0].data.length > maxDataPoints) {
+    meterGraph.data.datasets.forEach(dataset => {
+      dataset.data.shift();
+    });
+  }
+  
+  // Update the chart
+  meterGraph.update('none'); // Use 'none' for better performance
+}
+</script>
+</body>
+</html>
