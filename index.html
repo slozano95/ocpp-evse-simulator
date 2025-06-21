@@ -95,9 +95,8 @@
                     <span class="me-2">Plug Status:</span>
                     <span id="plugStatus" class="badge bg-success">Available</span>
                   </div>
-                  <div class="btn-group w-100">
-                    <button class="btn btn-outline-primary" id="plugInBtn">Plug In</button>
-                    <button class="btn btn-outline-danger" id="plugOutBtn">Plug Out</button>
+                  <div class="d-grid">
+                    <button class="btn btn-outline-primary" id="plugToggleBtn">Plug In</button>
                   </div>
                 </div>
                 <div class="col-md-6">
@@ -506,6 +505,9 @@ let powerRampRate = chargingPower*0.2; // kW per interval
 let lastMeterUpdate = Date.now();
 let uiUpdateInterval = null;
 let messageIdCounter = 1; // Add message ID counter
+let pendingRequests = {};
+let heartbeatInterval = null; // Add heartbeat interval
+let connectorErrorCode = "NoError"; // Add connector error code
 
 // Graph configuration
 let meterGraph = null;
@@ -523,6 +525,14 @@ let powerGauge = null;
 let voltageGauge = null;
 let currentGauge = null;
 let socGauge = null;
+
+function sendRequest(action, payload) {
+  const messageId = getNextMessageId();
+  const msg = [2, messageId, action, payload];
+  pendingRequests[messageId] = { action: action };
+  ws.send(JSON.stringify(msg));
+  logMsg(JSON.stringify(msg), 'out');
+}
 
 function getNextMessageId() {
   return (messageIdCounter++).toString();
@@ -565,6 +575,7 @@ function updatePlugStatus(status) {
   statusElement.textContent = status;
   statusElement.className = 'badge ' + (status === 'Connected' ? 'bg-success' : 'bg-danger');
   isPluggedIn = status === 'Connected';
+  updatePlugToggleButton();
   updateSessionButtons();
 }
 
@@ -573,10 +584,24 @@ function updateConnectorStatus(status) {
   statusElement.textContent = status;
   let statusClass = 'bg-secondary';
   switch(status) {
-    case 'Available': statusClass = 'bg-success'; break;
-    case 'Preparing': statusClass = 'bg-warning'; break;
-    case 'Charging': statusClass = 'bg-info'; break;
-    case 'Finishing': statusClass = 'bg-primary'; break;
+    case 'Available': 
+      statusClass = 'bg-success'; 
+      clearConnectorError(); // Clear errors when available
+      break;
+    case 'Preparing': 
+      statusClass = 'bg-warning'; 
+      clearConnectorError(); // Clear errors when preparing
+      break;
+    case 'Charging': 
+      statusClass = 'bg-info'; 
+      clearConnectorError(); // Clear errors when charging
+      break;
+    case 'Finishing': 
+      statusClass = 'bg-primary'; 
+      break;
+    case 'Faulted': 
+      statusClass = 'bg-danger'; 
+      break;
   }
   statusElement.className = 'badge ' + statusClass;
   connectorStatus = status;
@@ -618,15 +643,6 @@ function toggleCollapsible(id) {
   }
 }
 
-function updatePowerDisplay() {
-  const powerElement = document.getElementById('currentPower');
-  const powerProgress = document.getElementById('powerProgress');
-  const power = chargingInterval ? currentPower : 0;
-  powerElement.textContent = power.toFixed(2);
-  powerProgress.style.width = (power / chargingPower * 100) + '%';
-  powerProgress.textContent = power.toFixed(2) + ' kW';
-}
-
 function logMsg(msg, type) {
   const log = document.getElementById('log');
   const div = document.createElement('div');
@@ -643,7 +659,7 @@ function sendResponse(messageId, response) {
 }
 
 function sendBootNotification() {
-  const msg = [2, getNextMessageId(), "BootNotification", {
+  sendRequest("BootNotification", {
     chargePointVendor: document.getElementById('vendor').value,
     chargePointModel: document.getElementById('model').value,
     chargePointSerialNumber: document.getElementById('serialNumber').value,
@@ -652,20 +668,49 @@ function sendBootNotification() {
     imsi: document.getElementById('imsi').value,
     meterType: document.getElementById('meterType').value,
     meterSerial: document.getElementById('meterSerial').value
-  }];
-  ws.send(JSON.stringify(msg));
-  logMsg(JSON.stringify(msg), 'out');
+  });
 }
 
 function sendStatusNotification(connectorId, status) {
-  const statusMsg = [2, getNextMessageId(), "StatusNotification", {
+  sendRequest("StatusNotification", {
     connectorId: connectorId,
-    errorCode: "NoError",
+    errorCode: connectorErrorCode,
     status: status,
     timestamp: new Date().toISOString()
-  }];
-  ws.send(JSON.stringify(statusMsg));
-  logMsg(JSON.stringify(statusMsg), 'out');
+  });
+}
+
+function sendHeartbeat() {
+  sendRequest("Heartbeat", {});
+}
+
+function setConnectorError(errorCode) {
+  connectorErrorCode = errorCode;
+  // Send status notification with new error code
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendStatusNotification(1, connectorStatus);
+  }
+}
+
+function clearConnectorError() {
+  if (connectorErrorCode !== "NoError") {
+    connectorErrorCode = "NoError";
+    // Send status notification with cleared error
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendStatusNotification(1, connectorStatus);
+    }
+  }
+}
+
+function handleConnectorFault() {
+  // Set connector to faulted state
+  setConnectorError("ConnectorLockFailure");
+  updateConnectorStatus('Faulted');
+  
+  // Stop any active transaction
+  if (chargingInterval) {
+    stopTransaction("EmergencyStop");
+  }
 }
 
 function handleBootNotificationResponse(messageId, payload) {
@@ -681,6 +726,164 @@ function handleBootNotificationResponse(messageId, payload) {
   
   // Update the UI to reflect connector 1's status
   updateConnectorStatus("Available");
+  
+  // Start heartbeat mechanism
+  startHeartbeat();
+}
+
+function startHeartbeat() {
+  // Clear any existing heartbeat interval
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+  }
+  
+  // Get heartbeat interval from configuration or use default (60 seconds)
+  const heartbeatIntervalSeconds = parseInt(localStorage.getItem('ocpp_config_HeartbeatInterval')) || 60;
+  
+  // Send initial heartbeat
+  sendHeartbeat();
+  
+  // Set up periodic heartbeat
+  heartbeatInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendHeartbeat();
+    }
+  }, heartbeatIntervalSeconds * 1000);
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
+function sendAuthorize(idTag) {
+  sendRequest("Authorize", {
+    idTag: idTag
+  });
+}
+
+function handleAuthorizeResponse(messageId, payload) {
+  if (payload.idTagInfo.status === "Accepted") {
+    // Authorization successful, proceed with transaction
+    if (isRemoteSession) {
+      // For remote start, the transaction was already initiated
+      return;
+    } else {
+      // For local start, proceed with StartTransaction
+      proceedWithStartTransaction();
+    }
+  } else {
+    // Authorization failed
+    setConnectorError("AuthorizationError");
+    alert('Authorization failed: ' + payload.idTagInfo.status);
+    updateConnectorStatus('Preparing');
+    updateSessionButtons();
+  }
+}
+
+function proceedWithStartTransaction() {
+  meterValue = 0;
+  currentSoc = parseFloat(document.getElementById('initialSoc').value);
+  
+  sendRequest("StartTransaction", {
+    connectorId: 1,
+    idTag: document.getElementById('idTag').value,
+    meterStart: 0,
+    timestamp: new Date().toISOString()
+  });
+}
+
+function sendMeterValuesWithContext(context) {
+  if (!transactionId) return;
+  
+  // Get base values
+  const baseVoltage = parseInt(document.getElementById('voltage').value);
+  const baseCurrent = parseInt(document.getElementById('current').value);
+  const baseFrequency = parseInt(document.getElementById('frequency').value);
+  const basePowerFactor = parseFloat(document.getElementById('powerFactor').value);
+  
+  // Calculate actual values with variations
+  const actualVoltage = getVoltageVariation(baseVoltage);
+  const actualCurrent = getCurrentVariation(baseCurrent);
+  const actualFrequency = getFrequencyVariation(baseFrequency);
+  const actualPowerFactor = getPowerFactorVariation(basePowerFactor);
+  
+  // Calculate reactive and apparent power
+  const activePower = currentPower * 1000; // Convert to W
+  const reactivePower = activePower * Math.sqrt(1 - Math.pow(actualPowerFactor, 2));
+  const apparentPower = activePower / actualPowerFactor;
+  
+  sendRequest("MeterValues", {
+    connectorId: 1,
+    transactionId: transactionId,
+    meterValue: [{
+      timestamp: new Date().toISOString(),
+      context: context,
+      sampledValue: [
+        { 
+          value: meterValue.toFixed(0),
+          measurand: "Energy.Active.Import.Register",
+          unit: "Wh"
+        },
+        {
+          value: activePower.toFixed(0),
+          measurand: "Power.Active.Import",
+          unit: "W"
+        },
+        {
+          value: reactivePower.toFixed(0),
+          measurand: "Power.Reactive.Import",
+          unit: "var"
+        },
+        {
+          value: apparentPower.toFixed(0),
+          measurand: "Power.Apparent.Import",
+          unit: "VA"
+        },
+        {
+          value: actualCurrent.toFixed(1),
+          measurand: "Current.Import",
+          unit: "A"
+        },
+        {
+          value: actualVoltage.toFixed(1),
+          measurand: "Voltage",
+          unit: "V"
+        },
+        {
+          value: actualFrequency.toFixed(2),
+          measurand: "Frequency",
+          unit: "Hz"
+        },
+        {
+          value: actualPowerFactor.toFixed(2),
+          measurand: "Power.Factor",
+          unit: "Percent"
+        },
+        {
+          value: currentSoc.toFixed(1),
+          measurand: "SoC",
+          unit: "Percent"
+        }
+      ]
+    }]
+  });
+}
+
+function handleStartTransactionResponse(messageId, payload) {
+  if (payload.idTagInfo.status === "Accepted") {
+    transactionId = payload.transactionId;
+    updateConnectorStatus('Charging');
+    startMeterValues();
+    updateSessionButtons();
+  } else {
+    alert('Transaction failed: ' + payload.idTagInfo.status);
+    updateConnectorStatus('Preparing');
+    updateSessionButtons();
+    isRemoteSession = false;
+  }
 }
 
 function handleRemoteStartTransaction(messageId, payload) {
@@ -689,33 +892,16 @@ function handleRemoteStartTransaction(messageId, payload) {
     return;
   }
   
-  if (!isPluggedIn) {
-    sendResponse(messageId, { status: "Rejected" });
-    return;
-  }
-  
-  if (connectorStatus !== 'Preparing') {
-    sendResponse(messageId, { status: "Rejected" });
-    return;
-  }
-  
   isRemoteSession = true;
-  transactionId = Date.now();
   meterValue = 0;
   currentSoc = parseFloat(document.getElementById('initialSoc').value);
   
-  const startMsg = [2, getNextMessageId(), "StartTransaction", {
+  sendRequest("StartTransaction", {
     connectorId: payload.connectorId || 1,
     idTag: payload.idTag,
     meterStart: 0,
     timestamp: new Date().toISOString()
-  }];
-  ws.send(JSON.stringify(startMsg));
-  logMsg(JSON.stringify(startMsg), 'out');
-  
-  updateConnectorStatus('Charging');
-  startMeterValues();
-  updateSessionButtons();
+  });
   
   sendResponse(messageId, { status: "Accepted" });
 }
@@ -726,26 +912,45 @@ function handleRemoteStopTransaction(messageId, payload) {
     return;
   }
   
+  stopTransaction("Remote");
+  sendResponse(messageId, { status: "Accepted" });
+}
+
+function stopTransaction(reason) {
+  // Stop all intervals
   clearInterval(chargingInterval);
   clearInterval(uiUpdateInterval);
-  const stopMsg = [2, getNextMessageId(), "StopTransaction", {
+  chargingInterval = null;
+  uiUpdateInterval = null;
+  
+  // Send final meter values with Transaction.End context
+  if (transactionId) {
+    sendMeterValuesWithContext("Transaction.End");
+  }
+  
+  // Reset power to 0
+  currentPower = 0;
+  targetPower = 0;
+  
+  // Reset gauges to show 0 values
+  resetGauges();
+  
+  // Send stop transaction request
+  sendRequest("StopTransaction", {
     transactionId: transactionId,
     meterStop: meterValue,
     timestamp: new Date().toISOString(),
-    reason: "Remote"
-  }];
-  ws.send(JSON.stringify(stopMsg));
-  logMsg(JSON.stringify(stopMsg), 'out');
+    reason: reason
+  });
   
+  // Set connector to Finishing status
   updateConnectorStatus('Finishing');
-  if (isPluggedIn) {
-    updateConnectorStatus('Preparing');
-  } else {
-    updateConnectorStatus('Available');
-  }
-  updateSessionButtons();
   
-  sendResponse(messageId, { status: "Accepted" });
+  // Reset session flags
+  isRemoteSession = false;
+  transactionId = null;
+  
+  updateSessionButtons();
 }
 
 function handleSetConfiguration(messageId, payload) {
@@ -874,6 +1079,7 @@ document.getElementById('configForm').onsubmit = function(e) {
     connectBtn.classList.remove('btn-primary');
     connectBtn.classList.add('btn-danger');
     connectBtn.disabled = false;
+    reinitializeUI();
     updateSessionButtons();
     sendBootNotification();
   };
@@ -896,9 +1102,20 @@ document.getElementById('configForm').onsubmit = function(e) {
         }
       } else if (message[0] === 3) { // Response
         const [_, messageId, payload] = message;
-        // Check if this is a response to our boot notification
-        if (messageId === "1") {
-          handleBootNotificationResponse(messageId, payload);
+        const pendingRequest = pendingRequests[messageId];
+        if (pendingRequest) {
+          switch (pendingRequest.action) {
+            case "BootNotification":
+              handleBootNotificationResponse(messageId, payload);
+              break;
+            case "StartTransaction":
+              handleStartTransactionResponse(messageId, payload);
+              break;
+            case "Authorize":
+              handleAuthorizeResponse(messageId, payload);
+              break;
+          }
+          delete pendingRequests[messageId];
         }
       }
     } catch (e) {
@@ -909,6 +1126,7 @@ document.getElementById('configForm').onsubmit = function(e) {
     logMsg('WebSocket closed', 'in');
     clearInterval(chargingInterval);
     clearInterval(uiUpdateInterval);
+    stopHeartbeat(); // Stop heartbeat when connection closes
     if (meterGraph) {
       meterGraph.destroy();
       meterGraph = null;
@@ -929,7 +1147,6 @@ document.getElementById('configForm').onsubmit = function(e) {
       socGauge.destroy();
       socGauge = null;
     }
-    updatePowerDisplay();
     updateConnectionStatus('Disconnected', false);
     connectBtn.textContent = 'Connect';
     connectBtn.classList.remove('btn-danger');
@@ -940,6 +1157,7 @@ document.getElementById('configForm').onsubmit = function(e) {
   ws.onerror = (err) => {
     logMsg('WebSocket error', 'in');
     updateConnectionStatus('Error', false);
+    setConnectorError("CommunicationError");
     connectBtn.disabled = false;
   };
 };
@@ -972,7 +1190,6 @@ document.getElementById('power').onchange = function() {
   if (newPower >= 1 && newPower <= 350) {
     chargingPower = newPower;
     targetPower = newPower;
-    updatePowerDisplay();
   }
 };
 
@@ -1072,10 +1289,19 @@ function calculatePowerRamp() {
   return currentPower;
 }
 
+function reinitializeUI() {
+  // Reinitialize graph and gauges if they don't exist
+  if (!meterGraph) {
+    initGraph();
+  }
+  if (!powerGauge || !voltageGauge || !currentGauge || !socGauge) {
+    initGauges();
+  }
+}
+
 // Initialize graph when page loads
 document.addEventListener('DOMContentLoaded', function() {
-  initGraph();
-  initGauges();
+  reinitializeUI();
   
   // Initialize all collapsible sections as collapsed
   const collapsibleContents = document.querySelectorAll('.collapsible-content');
@@ -1086,6 +1312,9 @@ document.addEventListener('DOMContentLoaded', function() {
     icon.classList.add('bi-chevron-down');
   });
   updateSessionButtons();
+  
+  // Add error simulation button
+  addErrorSimulationButton();
 });
 
 function initGraph() {
@@ -1436,6 +1665,28 @@ function updateGauge(gauge, value, maxValue) {
   gauge.update();
 }
 
+function resetGauges() {
+  // Reset power gauge to 0
+  if (powerGauge) {
+    updateGauge(powerGauge, 0, chargingPower);
+    document.getElementById('powerGaugeValue').textContent = '0.00 kW';
+  }
+  
+  // Reset voltage gauge to 0
+  if (voltageGauge) {
+    updateGauge(voltageGauge, 0, 400);
+    document.getElementById('voltageGaugeValue').textContent = '0.0 V';
+  }
+  
+  // Reset current gauge to 0
+  if (currentGauge) {
+    updateGauge(currentGauge, 0, 400);
+    document.getElementById('currentGaugeValue').textContent = '0.0 A';
+  }
+  
+  // Note: SoC gauge should not be reset as it represents the vehicle's state
+}
+
 function updateUIValues() {
   // Calculate actual power with ramping
   const actualPower = calculatePowerRamp();
@@ -1530,62 +1781,7 @@ function startMeterValues() {
       soc: currentSoc
     });
     
-    const meterMsg = [2, getNextMessageId(), "MeterValues", {
-      connectorId: 1,
-      transactionId: transactionId,
-      meterValue: [{
-        timestamp: new Date().toISOString(),
-        sampledValue: [
-          { 
-            value: meterValue.toFixed(0),
-            measurand: "Energy.Active.Import.Register",
-            unit: "Wh"
-          },
-          {
-            value: activePower.toFixed(0),
-            measurand: "Power.Active.Import",
-            unit: "W"
-          },
-          {
-            value: reactivePower.toFixed(0),
-            measurand: "Power.Reactive.Import",
-            unit: "var"
-          },
-          {
-            value: apparentPower.toFixed(0),
-            measurand: "Power.Apparent.Import",
-            unit: "VA"
-          },
-          {
-            value: actualCurrent.toFixed(1),
-            measurand: "Current.Import",
-            unit: "A"
-          },
-          {
-            value: actualVoltage.toFixed(1),
-            measurand: "Voltage",
-            unit: "V"
-          },
-          {
-            value: actualFrequency.toFixed(2),
-            measurand: "Frequency",
-            unit: "Hz"
-          },
-          {
-            value: actualPowerFactor.toFixed(2),
-            measurand: "Power.Factor",
-            unit: "Percent"
-          },
-          {
-            value: currentSoc.toFixed(1),
-            measurand: "SoC",
-            unit: "Percent"
-          }
-        ]
-      }]
-    }];
-    ws.send(JSON.stringify(meterMsg));
-    logMsg(JSON.stringify(meterMsg), 'out');
+    sendMeterValuesWithContext("Sample.Periodic");
   }, meterInterval * 1000);
 }
 
@@ -1605,22 +1801,10 @@ document.getElementById('startBtn').onclick = function() {
     return;
   }
   
-  transactionId = Date.now();
   meterValue = 0;
   currentSoc = parseFloat(document.getElementById('initialSoc').value);
   
-  const startMsg = [2, getNextMessageId(), "StartTransaction", {
-    connectorId: 1,
-    idTag: document.getElementById('idTag').value,
-    meterStart: 0,
-    timestamp: new Date().toISOString()
-  }];
-  ws.send(JSON.stringify(startMsg));
-  logMsg(JSON.stringify(startMsg), 'out');
-  
-  updateConnectorStatus('Charging');
-  startMeterValues();
-  updateSessionButtons();
+  sendAuthorize(document.getElementById('idTag').value);
 };
 
 document.getElementById('stopBtn').onclick = function() {
@@ -1629,45 +1813,48 @@ document.getElementById('stopBtn').onclick = function() {
     return;
   }
   
-  clearInterval(chargingInterval);
-  clearInterval(uiUpdateInterval);
-  const stopMsg = [2, getNextMessageId(), "StopTransaction", {
-    transactionId: transactionId,
-    meterStop: meterValue,
-    timestamp: new Date().toISOString(),
-    reason: "Local"
-  }];
-  ws.send(JSON.stringify(stopMsg));
-  logMsg(JSON.stringify(stopMsg), 'out');
-  
-  updateConnectorStatus('Finishing');
-  if (isPluggedIn) {
-    updateConnectorStatus('Preparing');
-  } else {
-    updateConnectorStatus('Available');
-  }
-  updateSessionButtons();
+  stopTransaction("Local");
 };
 
 // Add event listeners for plug controls
-document.getElementById('plugInBtn').onclick = function() {
-  updatePlugStatus('Connected');
-  updateConnectorStatus('Preparing');
+document.getElementById('plugToggleBtn').onclick = function() {
+  if (isPluggedIn) {
+    // Currently plugged in, so unplug
+    if (chargingInterval) {
+      alert('Cannot unplug while charging is in progress');
+      return;
+    }
+    updatePlugStatus('Disconnected');
+    // If currently in Finishing status, change to Available
+    if (connectorStatus === 'Finishing') {
+      updateConnectorStatus('Available');
+    }
+  } else {
+    // Currently not plugged in, so plug in
+    updatePlugStatus('Connected');
+    // Only change to Preparing if currently Available (after unplugging from Finishing)
+    if (connectorStatus === 'Available') {
+      updateConnectorStatus('Preparing');
+    }
+  }
 };
 
-document.getElementById('plugOutBtn').onclick = function() {
-  if (chargingInterval) {
-    alert('Cannot unplug while charging is in progress');
-    return;
+function updatePlugToggleButton() {
+  const toggleBtn = document.getElementById('plugToggleBtn');
+  if (isPluggedIn) {
+    toggleBtn.textContent = 'Plug Out';
+    toggleBtn.className = 'btn btn-outline-danger';
+  } else {
+    toggleBtn.textContent = 'Plug In';
+    toggleBtn.className = 'btn btn-outline-primary';
   }
-  updatePlugStatus('Disconnected');
-  updateConnectorStatus('Available');
-};
+}
 
 // Initialize displays
 updateConnectionStatus('Disconnected', false);
 updatePlugStatus('Disconnected');
 updateConnectorStatus('Available');
+updatePlugToggleButton();
 
 // Add URL parameter handling at the start of the script
 function getUrlParameter(name) {
@@ -1738,8 +1925,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Initialize graph and gauges
-  initGraph();
-  initGauges();
+  reinitializeUI();
   
   // Initialize all collapsible sections as collapsed
   const collapsibleContents = document.querySelectorAll('.collapsible-content');
@@ -1845,6 +2031,19 @@ function updateGraph(timestamp, values) {
   
   // Update the chart
   meterGraph.update('none'); // Use 'none' for better performance
+}
+
+// Add error simulation button (for testing)
+function addErrorSimulationButton() {
+  const errorBtn = document.createElement('button');
+  errorBtn.className = 'btn btn-outline-danger btn-sm mt-2';
+  errorBtn.textContent = 'Simulate Fault';
+  errorBtn.onclick = handleConnectorFault;
+  
+  const statusCard = document.querySelector('.card-body');
+  if (statusCard) {
+    statusCard.appendChild(errorBtn);
+  }
 }
 </script>
 </body>
