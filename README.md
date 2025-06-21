@@ -75,7 +75,7 @@ Available parameters:
 ## Usage
 
 1. **Connect to OCPP Server**:
-   - Enter the OCPP server URL (default: wss://ocpp.chufi.co)
+   - Enter the OCPP server URL (default: wss://ocpp.server.co)
    - Enter the Station ID (default: T01)
    - Click "Connect"
 
